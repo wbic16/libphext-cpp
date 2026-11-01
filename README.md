@@ -75,3 +75,9 @@ Loaded Terse file with: 52 scrolls.
                  * Scroll #48: FOOTNOTES #171-180
                  * Scroll #49: FOOTNOTES #181-187
                  * Scroll #50: Copyright and License
+
+## Coordinate components
+
+Coordinate components (`trs::Coordinate`) are 32-bit and unbounded in practice. In earlier revisions they were `uint16_t`, which silently wrapped a component from 65,535 back to 0 on advance — a fixed-width cap in disguise; that cap is removed. (This repository carries no version marker, so no version number is stamped here.)
+
+Dense graphs: phext is sparse by design. Coordinate components are unbounded, but a fully-populated dense graph contains the product of its dimensions' extents in scrolls — a dense block spanning 1000 in each of 9 dimensions implies 10^27 scrolls. Materializing, exploding, or indexing such a graph costs memory proportional to its populated scroll count. The old 999 cap never protected against this (999^9 was already unreachable); sparsity does. Keep graphs sparse.

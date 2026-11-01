@@ -39,17 +39,29 @@ namespace trs
    static constexpr uint8_t SHELF_BREAK      = Break::SHELF;
    static constexpr uint8_t LIBRARY_BREAK    = Break::LIBRARY;
 
+   // Coordinate components are 32-bit and unbounded in practice: they were
+   // uint16_t in earlier revisions, which silently wrapped a component from
+   // 65,535 back to 0 on advance — a fixed-width cap in disguise. Storage is
+   // keyed by std::map<size_t, ...>, which imposes no bound of its own.
+   //
+   // Dense graphs: phext is sparse by design. Coordinate components are
+   // unbounded, but a fully-populated dense graph contains the product of
+   // its dimensions' extents in scrolls — a dense block spanning 1000 in
+   // each of 9 dimensions implies 10^27 scrolls. Materializing, exploding,
+   // or indexing such a graph costs memory proportional to its populated
+   // scroll count. The old 999 cap never protected against this (999^9 was
+   // already unreachable); sparsity does. Keep graphs sparse.
    struct Coordinate
    {
-      uint16_t LibraryID{1};
-      uint16_t ShelfID{1};
-      uint16_t SeriesID{1};
-      uint16_t CollectionID{1};
-      uint16_t VolumeID{1};
-      uint16_t BookID{1};
-      uint16_t ChapterID{1};
-      uint16_t SectionID{1};
-      uint16_t ScrollID{1};
+      uint32_t LibraryID{1};
+      uint32_t ShelfID{1};
+      uint32_t SeriesID{1};
+      uint32_t CollectionID{1};
+      uint32_t VolumeID{1};
+      uint32_t BookID{1};
+      uint32_t ChapterID{1};
+      uint32_t SectionID{1};
+      uint32_t ScrollID{1};
 
       void libraryBreak()
       {
