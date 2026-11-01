@@ -76,6 +76,32 @@ Loaded Terse file with: 52 scrolls.
                  * Scroll #49: FOOTNOTES #181-187
                  * Scroll #50: Copyright and License
 
+## Development and Release
+
+**Prerequisites (read first):**
+
+1. Canonical build: **Windows with Visual Studio / MSBuild** (`terse-string.sln`).
+2. Linux fallback: `g++` with C++20 support. The Linux build needs a workaround, stated plainly: `trs_string.h` uses `std::cerr` and `std::find` without including `<iostream>` / `<algorithm>`; MSVC supplies them transitively, g++ does not. The build script passes `-include iostream -include algorithm` to supply exactly those two headers — a workaround for a pre-existing gap, not a fix.
+
+**Test:**
+
+1. Run `scripts/test.sh`
+2. That builds the binary (step below), then smoke-runs it on copies of `hello-world.t` (expected: 8 scrolls, 159 bytes) and `the-odyssey.t` (expected: 52 scrolls, 706,366 bytes) and prints PASS/FAIL against those known-good totals.
+
+**Build:**
+
+1. Windows: run `scripts/build.sh` — it prints the MSBuild route (`msbuild terse-string.sln /p:Configuration=Release`); or open the solution in Visual Studio and build Release.
+2. Linux: run `scripts/build.sh` — it runs exactly:
+   `g++ -std=c++20 -include iostream -include algorithm -o terse-string main.cpp`
+
+**Publish:**
+
+There is no package registry for this library. Distribution is a git tag on the GitHub repository, and the script never pushes anything itself.
+
+1. Run `scripts/publish.sh` — it runs the smoke tests, prints exactly what will be published (git tag `v0.4.0`), and stops.
+2. Only when that output looks right, run `PUBLISH_CONFIRM=1 scripts/publish.sh` — that creates the LOCAL tag `v0.4.0` and prints the push command.
+3. A human then publishes the tag by running exactly: `git push origin v0.4.0`
+
 ## Coordinate components
 
 Coordinate components (`trs::Coordinate`) are 32-bit and unbounded in practice. In earlier revisions they were `uint16_t`, which silently wrapped a component from 65,535 back to 0 on advance — a fixed-width cap in disguise; that cap is removed. (This repository carries no version marker, so no version number is stamped here.)
