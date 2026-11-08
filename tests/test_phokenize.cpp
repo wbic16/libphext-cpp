@@ -5,6 +5,7 @@
 #include "../phext.h"
 #include "harness.h"
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <map>
