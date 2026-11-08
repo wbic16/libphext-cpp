@@ -5,3 +5,6 @@ bin/
 *.vcxproj.filters
 x64/Debug/*
 *.*log
+# local build outputs
+terse-string
+phext_driver*
