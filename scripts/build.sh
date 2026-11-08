@@ -2,10 +2,9 @@
 # libphext-cpp build step.
 # Canonical build: Windows + MSVC (terse-string.sln / .vcxproj).
 # On Linux this script compiles main.cpp with g++ -std=c++20.
-# WHY the -include flags: trs_string.h uses std::cerr and std::find without
-# including <iostream>/<algorithm>; MSVC supplies them transitively, g++
-# does not. The two -include flags supply exactly those headers and nothing
-# else -- they work around a pre-existing gap, they do not fix it.
+# trs_string.h includes everything it uses since 0.5.0 (the old
+# `-include iostream -include algorithm` workaround is gone). phext.h, the
+# libphext-rs parity API, needs only C++17; the legacy demo stays C++20.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 case "$(uname -s)" in
@@ -16,5 +15,5 @@ case "$(uname -s)" in
     exit 0
     ;;
 esac
-g++ -std=c++20 -include iostream -include algorithm -o terse-string main.cpp
+g++ -std=c++20 -o terse-string main.cpp
 echo "Built ./terse-string"

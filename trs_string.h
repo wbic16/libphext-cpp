@@ -10,6 +10,13 @@
 #include <map>
 #include <vector>
 #include <sstream>
+#include <iostream>
+#include <algorithm>
+#include <stdexcept>
+
+// libphext-cpp 0.5.0 - trs_string.h is the legacy tree API, kept working
+// as-is. New code should use phext.h (the libphext-rs 0.5.0 parity API).
+#define TRS_STRING_VERSION "0.5.0"
 
 namespace trs
 {
@@ -480,6 +487,13 @@ namespace trs
          m_terse = {};
          m_buffer.clear();
          m_current.start = 0;
+         m_current.end = 0;
+         // reset the walker state too: before 0.5.0 a second load kept
+         // advancing from the previous document's coordinate and kept
+         // accumulating m_pages, so pageCount() lied after any reload
+         // (expand()/contract() included). See PARITY audit section 5.5.
+         m_coords = Coordinate{};
+         m_pages = 0;
          for (const uint8_t ith : data)
          {
             switch (ith)

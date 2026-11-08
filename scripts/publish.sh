@@ -3,12 +3,12 @@
 # There is NO package registry for this library: distribution is a git tag
 # on the GitHub repository. This script NEVER pushes. With
 # PUBLISH_CONFIRM=1 it creates the local tag v0.4.0 and prints the exact
-# push command for a human to run. (This repo carries no version marker in
-# its sources; v0.4.0 names the unbounded-coordinates release, matching the
-# rest of the libphext family.)
+# push command for a human to run. (Version markers live in the sources:
+# PHEXT_CPP_VERSION_* in phext.h and TRS_STRING_VERSION in trs_string.h;
+# v0.5.0 is the libphext-rs parity release.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION="0.4.0"
+VERSION="0.5.0"
 echo "== libphext-cpp publish: version ${VERSION} =="
 echo "-- step 1/2: tests"
 "$(dirname "$0")/test.sh"
