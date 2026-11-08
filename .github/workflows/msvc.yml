@@ -1,0 +1,48 @@
+# libphext-cpp CI — MSVC conformance run for phext.h (the header is designed
+# MSVC-friendly; this workflow is where that claim is tested) plus the
+# standing g++ regression via scripts/test.sh.
+name: msvc
+
+on:
+  push:
+    branches: [emise/parity-0.5.0]
+  workflow_dispatch:
+
+jobs:
+  msvc:
+    name: conformance suites (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build conformance suites with cl (C++17)
+        shell: cmd
+        run: |
+          if not exist out mkdir out
+          cl /std:c++17 /EHsc /W3 tests\test_phext.cpp /Fe:out\test_phext.exe || exit /b 1
+          cl /std:c++17 /EHsc /W3 tests\test_phokenize.cpp /Fe:out\test_phokenize.exe || exit /b 1
+          cl /std:c++17 /EHsc /W3 tests\test_binary.cpp /Fe:out\test_binary.exe || exit /b 1
+          cl /std:c++20 /EHsc /W3 tests\test_legacy.cpp /Fe:out\test_legacy.exe || exit /b 1
+      - name: Run conformance suites (from repo root — fixtures are tests/…)
+        shell: cmd
+        run: |
+          out\test_phext.exe || exit /b 1
+          out\test_phokenize.exe || exit /b 1
+          out\test_binary.exe || exit /b 1
+          out\test_legacy.exe || exit /b 1
+      # test_seal is intentionally not in this job: it requires
+      # -DPHEXT_CPP_WITH_XZ + liblzma, which the windows-latest image does
+      # not provide. The xz seal is opt-in, mirroring the RS `xz` feature;
+      # the ubuntu job below exercises it when liblzma-dev is installed.
+
+  gcc-regression:
+    name: scripts/test.sh (g++, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install liblzma headers (so the xz seal suite runs, not skips)
+        run: sudo apt-get update && sudo apt-get install -y liblzma-dev
+      - name: Run the full test script
+        run: bash scripts/test.sh
