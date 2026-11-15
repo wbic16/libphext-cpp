@@ -14,9 +14,9 @@
 #include <algorithm>
 #include <stdexcept>
 
-// libphext-cpp 0.6.0 - trs_string.h is the legacy tree API, kept working
-// as-is. New code should use phext.h (the libphext-rs 0.6.0 parity API).
-#define TRS_STRING_VERSION "0.6.0"
+// libphext-cpp 0.6.1 - trs_string.h is the legacy tree API, kept working
+// as-is. New code should use phext.h (the libphext-rs 0.6.1 parity API).
+#define TRS_STRING_VERSION "0.6.1"
 
 namespace trs
 {
