@@ -98,9 +98,9 @@ Loaded Terse file with: 52 scrolls.
 
 There is no package registry for this library. Distribution is a git tag on the GitHub repository, and the script never pushes anything itself.
 
-1. Run `scripts/publish.sh` — it runs the smoke tests, prints exactly what will be published (git tag `v0.5.0`), and stops.
-2. Only when that output looks right, run `PUBLISH_CONFIRM=1 scripts/publish.sh` — that creates the LOCAL tag `v0.5.0` and prints the push command.
-3. A human then publishes the tag by running exactly: `git push origin v0.5.0`
+1. Run `scripts/publish.sh` — it runs the smoke tests, prints exactly what will be published (git tag `v0.6.0`), and stops.
+2. Only when that output looks right, run `PUBLISH_CONFIRM=1 scripts/publish.sh` — that creates the LOCAL tag `v0.6.0` and prints the push command.
+3. A human then publishes the tag by running exactly: `git push origin v0.6.0`
 
 ## Coordinate components
 
@@ -108,10 +108,10 @@ Coordinate components (`trs::Coordinate`) are 32-bit and unbounded in practice. 
 
 Dense graphs: phext is sparse by design. Coordinate components are unbounded, but a fully-populated dense graph contains the product of its dimensions' extents in scrolls — a dense block spanning 1000 in each of 9 dimensions implies 10^27 scrolls. Materializing, exploding, or indexing such a graph costs memory proportional to its populated scroll count. The old 999 cap never protected against this (999^9 was already unreachable); sparsity does. Keep graphs sparse.
 
-## phext.h — libphext-rs 0.5.0 parity API (new in 0.5.0)
+## phext.h — libphext-rs 0.6.0 parity API (chains new in 0.6.0)
 
 `phext.h` is a header-only C++17 API in namespace `phext` that mirrors
-libphext-rs v0.5.0 function-for-function: free functions over `std::string`
+libphext-rs v0.6.0 function-for-function: free functions over `std::string`
 (fetch / insert / replace / remove / range_replace, phokenize / explode /
 implode, expand / contract, checksum (XXH3-128 via the vendored `xxhash.h`),
 manifest, text listings, binary scrolls with the base64-verbatim ingestion

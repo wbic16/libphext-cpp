@@ -8,9 +8,11 @@
 #      The runs happen on copies in a temp dir: the binary can save in place
 #      when given a command flag, and the fixtures must never be mutated.
 #   2. build and run the phext.h conformance suites in tests/ — ports of
-#      the libphext-rs v0.5.0 test corpus (test_lib.rs, test_phokenize.rs,
-#      test_binary.rs, regressions.rs), the audit section-5 probes, and the
-#      legacy regression tests. phext.h itself is exercised as C++17; the
+#      the libphext-rs test corpus (test_lib.rs, test_phokenize.rs,
+#      test_binary.rs, regressions.rs, test_chain.rs at v0.6.0), the shared
+#      chain conformance fixtures (tests/fixtures/chains, 10 cases / 42
+#      fetches, byte-identical round-trip), the audit section-5 probes, and
+#      the legacy regression tests. phext.h itself is exercised as C++17; the
 #      legacy header keeps its C++20 target. The vendored RS fixture
 #      tests/unit-test.phext is SHA-256-checked before use (it is gitignored
 #      upstream in libphext-rs, so its hash is its provenance).
@@ -45,10 +47,10 @@ fi
 echo "SMOKE TEST PASS"
 
 CXX="${CXX:-g++}"
-echo "== conformance suites (phext.h vs libphext-rs v0.5.0) =="
+echo "== conformance suites (phext.h vs libphext-rs v0.6.0) =="
 echo "4c1016783c8e9ec065244172929593e9595c6e6f1d266c317d12961b9ac49794  tests/unit-test.phext" | sha256sum -c - >/dev/null
 echo "tests/unit-test.phext: SHA-256 OK"
-for suite in test_phext test_phokenize test_binary; do
+for suite in test_phext test_phokenize test_binary test_chain test_chain_fixtures; do
   "${CXX}" -std=c++17 -O1 -o "${TMP}/${suite}" "tests/${suite}.cpp"
   "${TMP}/${suite}"
 done
