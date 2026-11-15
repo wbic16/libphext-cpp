@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------------------------------------
-// libphext-cpp 0.6.0 — phext.h
+// libphext-cpp 0.6.1 — phext.h
 //
-// A header-only C++17 port of libphext-rs v0.6.0 (wbic16/libphext-rs @ exo),
+// A header-only C++17 port of libphext-rs v0.6.1 (wbic16/libphext-rs @ exo),
 // mirroring its public API function-for-function: free functions over
 // std::string / std::string_view in namespace `phext`.
 //
@@ -43,9 +43,10 @@
 
 #define PHEXT_CPP_VERSION_MAJOR 0
 #define PHEXT_CPP_VERSION_MINOR 6
-#define PHEXT_CPP_VERSION_PATCH 0
+#define PHEXT_CPP_VERSION_PATCH 1
 
 #include <cstdint>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -53,6 +54,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -944,6 +946,229 @@ inline std::string manifest(std::string_view input) {
 
 
 // -----------------------------------------------------------------------------------------------------------
+// line/column addressing (RS src/phext.rs addressing layer, 0.6.1; range syntax ratified
+// by Will 2026-11-15 — RANGE-SYNTAX-PROPOSAL.md in the ports program workspace)
+// -----------------------------------------------------------------------------------------------------------
+// A point address is "[$N:]<9D coordinate>@<line>,<column>": the multiverse prefix and the
+// coordinate, plus a within-scroll caret position. Line and column are 1-based; a position
+// names a caret boundary (column 1 is the boundary before the line's first character; a
+// line of n characters has valid columns 1..n+1), and columns count Unicode scalar values.
+// A point may carry "+<offsetChars>": select forward that many characters (scalars) from
+// the point, counted within the scroll, terminating at the scroll boundary.
+//
+// A range address is two point addresses joined by one hyphen: "<point>-<point>". The
+// endpoints may span scrolls and universes; an endpoint without "@" names its whole scroll
+// (as start: its first boundary; as end: its last). Canonical form: endpoints in ascending
+// (universe, coordinate, line, column) order — direction is discarded — "$1:" never
+// written, integers in minimal decimal form. Out-of-range endpoints fail at resolution,
+// never clamp.
+
+struct ScrollPosition {
+   std::uint64_t line = 0;
+   std::uint64_t column = 0;
+};
+inline bool operator==(const ScrollPosition& a, const ScrollPosition& b) { return a.line == b.line && a.column == b.column; }
+inline bool operator!=(const ScrollPosition& a, const ScrollPosition& b) { return !(a == b); }
+inline bool operator<(const ScrollPosition& a, const ScrollPosition& b) {
+   if (a.line != b.line) return a.line < b.line;
+   return a.column < b.column;
+}
+inline bool operator>(const ScrollPosition& a, const ScrollPosition& b) { return b < a; }
+inline bool operator<=(const ScrollPosition& a, const ScrollPosition& b) { return !(b < a); }
+inline bool operator>=(const ScrollPosition& a, const ScrollPosition& b) { return !(a < b); }
+
+struct PointAddress {
+   std::uint64_t universe = 1;
+   Coordinate coordinate;
+   std::optional<ScrollPosition> position;
+   std::optional<std::uint64_t> offset;
+
+   // canonical serialization (RS Display for PointAddress): "$1:" is never emitted,
+   // integers in minimal decimal form
+   std::string to_string() const {
+      std::string result;
+      if (universe > 1) {
+         result += "$";
+         result += std::to_string(universe);
+         result += ":";
+      }
+      result += coordinate.to_string();
+      if (position.has_value()) {
+         result += "@";
+         result += std::to_string(position->line);
+         result += ",";
+         result += std::to_string(position->column);
+         if (offset.has_value()) {
+            result += "+";
+            result += std::to_string(*offset);
+         }
+      }
+      return result;
+   }
+};
+inline bool operator==(const PointAddress& a, const PointAddress& b) {
+   return a.universe == b.universe && a.coordinate == b.coordinate && a.position == b.position && a.offset == b.offset;
+}
+inline bool operator!=(const PointAddress& a, const PointAddress& b) { return !(a == b); }
+
+struct RangeAddress {
+   PointAddress start;
+   PointAddress end;
+
+   // canonical serialization (RS Display for RangeAddress)
+   std::string to_string() const { return start.to_string() + "-" + end.to_string(); }
+};
+inline bool operator==(const RangeAddress& a, const RangeAddress& b) { return a.start == b.start && a.end == b.end; }
+inline bool operator!=(const RangeAddress& a, const RangeAddress& b) { return !(a == b); }
+
+namespace detail {
+// unsigned decimal integers only — no sign, no whitespace (RS parse_address_uint);
+// overflow is an error, as in Rust
+inline std::optional<std::uint64_t> parse_address_uint(std::string_view text) {
+   if (text.empty()) return std::nullopt;
+   std::uint64_t n = 0;
+   for (char ch : text) {
+      if (ch < '0' || ch > '9') return std::nullopt;
+      const std::uint64_t digit = static_cast<std::uint64_t>(ch - '0');
+      if (n > (UINT64_MAX - digit) / 10) return std::nullopt;
+      n = n * 10 + digit;
+   }
+   return n;
+}
+
+// strict 9D coordinate parse for the addressing layer (RS parse_address_coordinate):
+// exactly three dotted arms joined by '/', every component >= 1. Unlike the lenient
+// to_coordinate, malformed input fails.
+inline std::optional<Coordinate> parse_address_coordinate(std::string_view text) {
+   static constexpr char expected_delim[8] = {'.', '.', '/', '.', '.', '/', '.', '.'};
+   std::uint64_t values[9];
+   std::size_t pos = 0;
+   for (int idx = 0; idx < 9; ++idx) {
+      const std::size_t start = pos;
+      while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') pos += 1;
+      if (pos == start) return std::nullopt;
+      const auto value = parse_address_uint(text.substr(start, pos - start));
+      if (!value.has_value() || *value < 1) return std::nullopt;
+      values[idx] = *value;
+      if (idx < 8) {
+         if (pos >= text.size() || text[pos] != expected_delim[idx]) return std::nullopt;
+         pos += 1;
+      } else if (pos != text.size()) {
+         return std::nullopt;
+      }
+   }
+   Coordinate result;
+   result.z.library = values[0];
+   result.z.shelf = values[1];
+   result.z.series = values[2];
+   result.y.collection = values[3];
+   result.y.volume = values[4];
+   result.y.book = values[5];
+   result.x.chapter = values[6];
+   result.x.section = values[7];
+   result.x.scroll = values[8];
+   return result;
+}
+
+// an endpoint without "@" sorts by role: as start, its scroll's first boundary;
+// as end, its scroll's last boundary (RS endpoint_position_key)
+inline std::pair<std::uint64_t, std::uint64_t> endpoint_position_key(const PointAddress& point, bool is_start) {
+   if (point.position.has_value()) return std::make_pair(point.position->line, point.position->column);
+   if (is_start) return std::make_pair(std::uint64_t{1}, std::uint64_t{1});
+   return std::make_pair(UINT64_MAX, UINT64_MAX);
+}
+
+// total order over endpoints: (universe, coordinate, line, column) (RS endpoint_cmp)
+inline int endpoint_cmp(const PointAddress& a, bool a_is_start, const PointAddress& b, bool b_is_start) {
+   if (a.universe != b.universe) return a.universe < b.universe ? -1 : 1;
+   if (a.coordinate != b.coordinate) return a.coordinate < b.coordinate ? -1 : 1;
+   const auto ka = endpoint_position_key(a, a_is_start);
+   const auto kb = endpoint_position_key(b, b_is_start);
+   if (ka != kb) return ka < kb ? -1 : 1;
+   return 0;
+}
+} // namespace detail
+
+// parses a v0.6.1 point address: "[$N:]<coordinate>[@<line>,<column>[+<offsetChars>]]".
+// Returns nullopt on any malformed input: universe 0, a coordinate component below 1, a
+// line or column below 1, a sign anywhere, or trailing structure. "$1:" is accepted on
+// input; the canonical to_string form never emits it. (RS parse_point_address)
+inline std::optional<PointAddress> parse_point_address(std::string_view address) {
+   std::uint64_t universe = 1;
+   std::string_view rest = address;
+   if (!rest.empty() && rest[0] == '$') {
+      rest.remove_prefix(1);
+      const std::size_t colon = rest.find(':');
+      if (colon == std::string_view::npos) return std::nullopt;
+      const auto n = detail::parse_address_uint(rest.substr(0, colon));
+      if (!n.has_value() || *n < 1) return std::nullopt;
+      universe = *n;
+      rest = rest.substr(colon + 1);
+   }
+   std::string_view coord_part = rest;
+   std::optional<std::string_view> pos_part;
+   const std::size_t at = rest.find('@');
+   if (at != std::string_view::npos) {
+      coord_part = rest.substr(0, at);
+      const std::string_view pos = rest.substr(at + 1);
+      if (pos.find('@') != std::string_view::npos) return std::nullopt;
+      pos_part = pos;
+   }
+   const auto coordinate = detail::parse_address_coordinate(coord_part);
+   if (!coordinate.has_value()) return std::nullopt;
+   PointAddress result;
+   result.universe = universe;
+   result.coordinate = *coordinate;
+   if (pos_part.has_value()) {
+      const std::string_view pos = *pos_part;
+      const std::size_t comma = pos.find(',');
+      if (comma == std::string_view::npos) return std::nullopt;
+      const auto line = detail::parse_address_uint(pos.substr(0, comma));
+      if (!line.has_value()) return std::nullopt;
+      const std::string_view col_part = pos.substr(comma + 1);
+      std::string_view col_text = col_part;
+      std::optional<std::uint64_t> offset;
+      const std::size_t plus = col_part.find('+');
+      if (plus != std::string_view::npos) {
+         col_text = col_part.substr(0, plus);
+         const auto off = detail::parse_address_uint(col_part.substr(plus + 1));
+         if (!off.has_value()) return std::nullopt;
+         offset = off;
+      }
+      const auto column = detail::parse_address_uint(col_text);
+      if (!column.has_value()) return std::nullopt;
+      if (*line < 1 || *column < 1) return std::nullopt;
+      result.position = ScrollPosition{*line, *column};
+      result.offset = offset;
+   }
+   return result;
+}
+
+// parses a v0.6.1 range address: exactly two point addresses joined by one hyphen. The
+// endpoints are normalized to ascending order (direction is discarded, per the ratified
+// spec). Range endpoints may not carry a "+offset" — the offset form never takes a second
+// endpoint. Returns nullopt on malformed input. (RS parse_range_address)
+inline std::optional<RangeAddress> parse_range_address(std::string_view address) {
+   const std::size_t hyphen = address.find('-');
+   if (hyphen == std::string_view::npos) return std::nullopt;
+   const std::string_view second = address.substr(hyphen + 1);
+   if (second.find('-') != std::string_view::npos) return std::nullopt;
+   const auto a = parse_point_address(address.substr(0, hyphen));
+   const auto b = parse_point_address(second);
+   if (!a.has_value() || !b.has_value()) return std::nullopt;
+   if (a->offset.has_value() || b->offset.has_value()) return std::nullopt;
+   RangeAddress result;
+   if (detail::endpoint_cmp(*a, true, *b, false) > 0) {
+      result.start = *b;
+      result.end = *a;
+   } else {
+      result.start = *a;
+      result.end = *b;
+   }
+   return result;
+}
+
+// -----------------------------------------------------------------------------------------------------------
 // chains + multiverse addressing (RS src/phext.rs chain layer, 0.6.0)
 // -----------------------------------------------------------------------------------------------------------
 // A chain: an ordered series of complete phexts within one stream, joined by
@@ -990,6 +1215,14 @@ struct Chain {
    // (universe 1). Out-of-range universes, missing scrolls, and malformed
    // universe prefixes yield an empty string, as fetch does (RS Chain::fetch).
    std::string fetch(std::string_view address) const;
+
+   // v0.6.1 line/column addressing (defined in the addressing section below):
+   // resolve_point -> (universe, coordinate, char offset); resolve_range ->
+   // per-scroll segments (universe, coordinate, segment text)
+   std::optional<std::tuple<std::uint64_t, Coordinate, std::uint64_t>> resolve_point(const PointAddress& point) const;
+   std::string fetch_point(std::string_view address) const;
+   std::optional<std::vector<std::tuple<std::uint64_t, Coordinate, std::string>>> resolve_range(const RangeAddress& range) const;
+   std::string fetch_range(std::string_view address) const;
 };
 inline bool operator==(const Chain& a, const Chain& b) { return a.closed == b.closed && a.members == b.members; }
 inline bool operator!=(const Chain& a, const Chain& b) { return !(a == b); }
@@ -1054,6 +1287,198 @@ inline std::string Chain::fetch(std::string_view address) const {
    const std::uint64_t universe = parsed->first;
    if (universe < 1 || universe > members.size()) return std::string();
    return phext::fetch(members[static_cast<std::size_t>(universe - 1)], parsed->second);
+}
+
+// -----------------------------------------------------------------------------------------------------------
+// line/column addressing resolution (RS Chain::resolve_point / fetch_point /
+// resolve_range / fetch_range, 0.6.1)
+// -----------------------------------------------------------------------------------------------------------
+// Columns and offsets count Unicode scalar values, never bytes: the helpers below walk
+// UTF-8 by leading byte (a scalar starts at every byte that is not a continuation byte),
+// which is exact for the valid UTF-8 scroll text this layer addresses.
+namespace detail {
+// byte length of the scalar starting at byte_pos (clamped to the remaining bytes)
+inline std::size_t utf8_scalar_length(std::string_view text, std::size_t byte_pos) {
+   const unsigned char b = static_cast<unsigned char>(text[byte_pos]);
+   std::size_t len = 1;
+   if (b >= 0xF0) len = 4;
+   else if (b >= 0xE0) len = 3;
+   else if (b >= 0xC0) len = 2;
+   const std::size_t remaining = text.size() - byte_pos;
+   return len < remaining ? len : remaining;
+}
+
+inline std::uint64_t utf8_scalar_count(std::string_view text) {
+   std::uint64_t count = 0;
+   std::size_t i = 0;
+   while (i < text.size()) {
+      i += utf8_scalar_length(text, i);
+      count += 1;
+   }
+   return count;
+}
+
+// byte offset of the scalar_offset-th scalar (text.size() when scalar_offset >= count)
+inline std::size_t utf8_byte_offset(std::string_view text, std::uint64_t scalar_offset) {
+   std::size_t i = 0;
+   std::uint64_t n = 0;
+   while (i < text.size() && n < scalar_offset) {
+      i += utf8_scalar_length(text, i);
+      n += 1;
+   }
+   return i;
+}
+
+// the text strictly between scalar boundaries lo and hi
+inline std::string utf8_scalar_slice(std::string_view text, std::uint64_t lo, std::uint64_t hi) {
+   if (hi <= lo) return std::string();
+   const std::size_t b0 = utf8_byte_offset(text, lo);
+   const std::size_t b1 = utf8_byte_offset(text, hi);
+   return std::string(text.substr(b0, b1 - b0));
+}
+
+// resolves a caret position inside one scroll to a character (scalar) offset.
+// nullopt when the line or column is past the scroll's extent — never clamps.
+// (RS resolve_scroll_offset; lines split on 0x0A, which stays inside the scroll)
+inline std::optional<std::uint64_t> resolve_scroll_offset(std::string_view text, ScrollPosition pos) {
+   if (pos.line < 1 || pos.column < 1) return std::nullopt;
+   std::uint64_t line = 1;
+   std::uint64_t column = 1;
+   std::uint64_t offset = 0;
+   std::size_t i = 0;
+   while (i < text.size()) {
+      if (line == pos.line && column == pos.column) return offset;
+      const std::size_t len = utf8_scalar_length(text, i);
+      if (len == 1 && text[i] == '\n') {
+         line += 1;
+         column = 1;
+      } else {
+         column += 1;
+      }
+      offset += 1;
+      i += len;
+   }
+   if (line == pos.line && column == pos.column) return offset;
+   return std::nullopt;
+}
+
+// the scroll text at a coordinate in one member phext, in the phokenize sense of
+// presence: a coordinate is present exactly when phokenize enumerates it.
+// (RS addressed_scroll_text)
+inline std::optional<std::string> addressed_scroll_text(std::string_view member, Coordinate target) {
+   for (const PositionedScroll& ps : phokenize(member)) {
+      if (ps.coord == target) return ps.scroll;
+   }
+   return std::nullopt;
+}
+} // namespace detail
+
+// resolves a point address against this chain: (universe, coordinate, character offset
+// within the scroll). A point without "@" resolves to offset 0 of its scroll. nullopt
+// when the universe or scroll is absent or the position is out of range — never clamps.
+inline std::optional<std::tuple<std::uint64_t, Coordinate, std::uint64_t>> Chain::resolve_point(const PointAddress& point) const {
+   if (point.universe < 1 || point.universe > members.size()) return std::nullopt;
+   const auto text = detail::addressed_scroll_text(members[static_cast<std::size_t>(point.universe - 1)], point.coordinate);
+   if (!text.has_value()) return std::nullopt;
+   std::uint64_t offset = 0;
+   if (point.position.has_value()) {
+      const auto resolved = detail::resolve_scroll_offset(*text, *point.position);
+      if (!resolved.has_value()) return std::nullopt;
+      offset = *resolved;
+   }
+   return std::make_tuple(point.universe, point.coordinate, offset);
+}
+
+// fetches a point address string. A bare point is a caret: it fetches the empty string.
+// The offset form fetches the selected characters: from the point, forward `offset`
+// characters (scalars) within the scroll, terminating at the scroll boundary. Any parse
+// or resolution failure fetches the empty string, as Chain::fetch does.
+inline std::string Chain::fetch_point(std::string_view address) const {
+   const auto point = parse_point_address(address);
+   if (!point.has_value()) return std::string();
+   if (!point->offset.has_value()) return std::string();
+   const auto resolved = resolve_point(*point);
+   if (!resolved.has_value()) return std::string();
+   const auto text = detail::addressed_scroll_text(members[static_cast<std::size_t>(point->universe - 1)], point->coordinate);
+   if (!text.has_value()) return std::string();
+   const std::uint64_t offset = std::get<2>(*resolved);
+   const std::uint64_t total = detail::utf8_scalar_count(*text);
+   const std::uint64_t count = *point->offset;
+   const std::uint64_t hi = (count >= total) ? total : (offset + count < total ? offset + count : total);
+   return detail::utf8_scalar_slice(*text, offset, hi);
+}
+
+// resolves a range against this chain into per-scroll segments: (universe, coordinate,
+// segment text) in ascending order. Middle scrolls contribute their whole text; the
+// endpoint scrolls contribute from/to their endpoint boundaries (an endpoint without
+// "@" contributes its whole scroll). nullopt when either endpoint fails to resolve —
+// an out-of-range endpoint is an error, never a clamp.
+inline std::optional<std::vector<std::tuple<std::uint64_t, Coordinate, std::string>>> Chain::resolve_range(const RangeAddress& range) const {
+   const PointAddress& start = range.start;
+   const PointAddress& end = range.end;
+   if (start.universe < 1 || end.universe > members.size() || start.universe > end.universe) return std::nullopt;
+   // both endpoint scrolls must be present, and both endpoint positions must resolve
+   PointAddress start_probe = start;
+   start_probe.offset = std::nullopt;
+   PointAddress end_probe = end;
+   end_probe.offset = std::nullopt;
+   if (!resolve_point(start_probe).has_value()) return std::nullopt;
+   if (!resolve_point(end_probe).has_value()) return std::nullopt;
+   std::vector<std::tuple<std::uint64_t, Coordinate, std::string>> segments;
+   for (std::uint64_t universe = start.universe; universe <= end.universe; ++universe) {
+      const std::string& member = members[static_cast<std::size_t>(universe - 1)];
+      std::vector<PositionedScroll> scrolls = phokenize(member);
+      std::sort(scrolls.begin(), scrolls.end());
+      for (const PositionedScroll& ps : scrolls) {
+         if (universe == start.universe && ps.coord < start.coordinate) continue;
+         if (universe == end.universe && ps.coord > end.coordinate) continue;
+         const std::uint64_t total = detail::utf8_scalar_count(ps.scroll);
+         std::uint64_t lo = 0;
+         std::uint64_t hi = total;
+         if (universe == start.universe && ps.coord == start.coordinate) {
+            if (start.position.has_value()) {
+               const auto resolved = detail::resolve_scroll_offset(ps.scroll, *start.position);
+               if (!resolved.has_value()) return std::nullopt;
+               lo = *resolved;
+            }
+         }
+         if (universe == end.universe && ps.coord == end.coordinate) {
+            if (end.position.has_value()) {
+               const auto resolved = detail::resolve_scroll_offset(ps.scroll, *end.position);
+               if (!resolved.has_value()) return std::nullopt;
+               hi = *resolved;
+            }
+         }
+         if (lo > hi) return std::nullopt;
+         segments.emplace_back(universe, ps.coord, detail::utf8_scalar_slice(ps.scroll, lo, hi));
+      }
+   }
+   return segments;
+}
+
+// fetches a range address string: the spanned text with phext structure bytes preserved —
+// the covered segments re-assembled at their coordinates into a phext (chain) fragment
+// (scroll breaks between covered scrolls inside a universe, CHAIN_BREAK between
+// universes, never a trailing CHAIN_CLOSE: a fragment is an excerpt, not a terminated
+// chain), so the result round-trips as a phext fragment. Empty segments contribute
+// nothing. Any parse or resolution failure fetches the empty string, as Chain::fetch does.
+inline std::string Chain::fetch_range(std::string_view address) const {
+   const auto range = parse_range_address(address);
+   if (!range.has_value()) return std::string();
+   const auto segments = resolve_range(*range);
+   if (!segments.has_value()) return std::string();
+   Chain fragment;
+   fragment.closed = false;
+   for (std::uint64_t universe = range->start.universe; universe <= range->end.universe; ++universe) {
+      std::string member;
+      for (const auto& segment : *segments) {
+         if (std::get<0>(segment) != universe) continue;
+         const std::string& text = std::get<2>(segment);
+         if (!text.empty()) member = insert(member, std::get<1>(segment), text);
+      }
+      fragment.members.push_back(member);
+   }
+   return fragment.serialize();
 }
 
 } // namespace phext
