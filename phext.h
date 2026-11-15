@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------------------------------------
-// libphext-cpp 0.5.0 — phext.h
+// libphext-cpp 0.6.0 — phext.h
 //
-// A header-only C++17 port of libphext-rs v0.5.0 (wbic16/libphext-rs @ exo),
+// A header-only C++17 port of libphext-rs v0.6.0 (wbic16/libphext-rs @ exo),
 // mirroring its public API function-for-function: free functions over
 // std::string / std::string_view in namespace `phext`.
 //
@@ -42,7 +42,7 @@
 #define PHEXT_H
 
 #define PHEXT_CPP_VERSION_MAJOR 0
-#define PHEXT_CPP_VERSION_MINOR 5
+#define PHEXT_CPP_VERSION_MINOR 6
 #define PHEXT_CPP_VERSION_PATCH 0
 
 #include <cstdint>
@@ -72,6 +72,8 @@ inline constexpr std::uint64_t COORDINATE_MINIMUM = 1; // human numbering — we
 // coordinate components are unbounded as of 0.4.0 (the 999 cap was removed)
 
 inline constexpr char LIBRARY_BREAK    = '\x01'; // 11th dimension
+inline constexpr char CHAIN_BREAK      = '\x02'; // stream level - separates whole phexts within a chain
+inline constexpr char CHAIN_CLOSE      = '\x03'; // stream level - terminates a chain
 inline constexpr char MORE_COWBELL     = '\x07';
 inline constexpr char LINE_BREAK       = '\x0A';
 inline constexpr char SCROLL_BREAK     = '\x17'; // 3D break
@@ -84,6 +86,8 @@ inline constexpr char SERIES_BREAK     = '\x1E'; // 9D break
 inline constexpr char SHELF_BREAK      = '\x1F'; // 10th dimension
 
 inline constexpr std::uint8_t LIBRARY_BREAK_U8    = 0x01;
+inline constexpr std::uint8_t CHAIN_BREAK_U8      = 0x02;
+inline constexpr std::uint8_t CHAIN_CLOSE_U8      = 0x03;
 inline constexpr std::uint8_t MORE_COWBELL_U8     = 0x07;
 inline constexpr std::uint8_t LINE_BREAK_U8       = 0x0A;
 inline constexpr std::uint8_t SCROLL_BREAK_U8     = 0x17;
@@ -936,6 +940,120 @@ inline std::string manifest(std::string_view input) {
       phoken.scroll = checksum(phoken.scroll);
    }
    return dephokenize(phokens);
+}
+
+
+// -----------------------------------------------------------------------------------------------------------
+// chains + multiverse addressing (RS src/phext.rs chain layer, 0.6.0)
+// -----------------------------------------------------------------------------------------------------------
+// A chain: an ordered series of complete phexts within one stream, joined by
+// CHAIN_BREAK (0x02) and optionally terminated by CHAIN_CLOSE (0x03). The
+// chain layer is a stream-level layer, one rung above the library break.
+// `closed` records how the chain ended: true when a CHAIN_CLOSE terminated
+// it, false when the stream simply ran out (EOF). A stream with no chain
+// bytes at all is a single unclosed chain holding one member phext: every
+// pre-0.6 phext reads this way.
+namespace detail {
+inline std::vector<std::string> split_on(std::string_view input, char delim) {
+   std::vector<std::string> out;
+   std::size_t start = 0;
+   for (std::size_t i = 0; i < input.size(); ++i) {
+      if (input[i] == delim) {
+         out.emplace_back(input.substr(start, i - start));
+         start = i + 1;
+      }
+   }
+   out.emplace_back(input.substr(start));
+   return out;
+}
+} // namespace detail
+
+struct Chain {
+   std::vector<std::string> members;
+   bool closed = false;
+
+   // serializes this chain alone: members joined by CHAIN_BREAK, with a
+   // trailing CHAIN_CLOSE when the chain is closed (RS Chain::serialize)
+   std::string serialize() const {
+      std::string result;
+      bool first = true;
+      for (const std::string& member : members) {
+         if (!first) result.push_back(CHAIN_BREAK);
+         first = false;
+         result += member;
+      }
+      if (closed) result.push_back(CHAIN_CLOSE);
+      return result;
+   }
+
+   // Fetch a scroll by multiverse address: "$N:coord", or a bare coordinate
+   // (universe 1). Out-of-range universes, missing scrolls, and malformed
+   // universe prefixes yield an empty string, as fetch does (RS Chain::fetch).
+   std::string fetch(std::string_view address) const;
+};
+inline bool operator==(const Chain& a, const Chain& b) { return a.closed == b.closed && a.members == b.members; }
+inline bool operator!=(const Chain& a, const Chain& b) { return !(a == b); }
+
+// splits a stream into its chains (RS parse_chains). Splitting follows
+// split_on semantics, so empty members and empty chains are preserved
+// exactly: parse and serialize are byte-exact inverses for every stream.
+inline std::vector<Chain> parse_chains(std::string_view input) {
+   const bool ends_closed = !input.empty() && input.back() == CHAIN_CLOSE;
+   std::vector<std::string> segments = detail::split_on(input, CHAIN_CLOSE);
+   if (ends_closed) segments.pop_back();
+   const std::size_t count = segments.size();
+   std::vector<Chain> chains;
+   chains.reserve(count);
+   for (std::size_t i = 0; i < count; ++i) {
+      Chain chain;
+      chain.closed = ends_closed || (i + 1 < count);
+      chain.members = detail::split_on(segments[i], CHAIN_BREAK);
+      chains.push_back(std::move(chain));
+   }
+   return chains;
+}
+
+// serializes a stream of chains back into stream bytes (RS serialize_chains)
+inline std::string serialize_chains(const std::vector<Chain>& chains) {
+   std::string result;
+   for (const Chain& chain : chains) result += chain.serialize();
+   return result;
+}
+
+// Multiverse addressing (RS parse_universe_address): inside a chain, each
+// member phext is a universe indexed from 1. "$N:<address>" names a scroll
+// in universe N; a bare address means universe 1. Returns nullopt for a
+// malformed universe prefix (missing ':', non-numeric, overflowing, or 0).
+inline std::optional<std::pair<std::uint64_t, Coordinate>> parse_universe_address(std::string_view address) {
+   std::uint64_t universe = 1;
+   std::string_view coord_part = address;
+   if (!address.empty() && address[0] == '$') {
+      const std::string_view rest = address.substr(1);
+      const std::size_t colon = rest.find(':');
+      if (colon == std::string_view::npos) return std::nullopt;
+      std::string_view num = rest.substr(0, colon);
+      coord_part = rest.substr(colon + 1);
+      if (!num.empty() && num[0] == '+') num.remove_prefix(1); // Rust usize parse accepts '+'
+      if (num.empty()) return std::nullopt;
+      std::uint64_t n = 0;
+      for (char ch : num) {
+         if (ch < '0' || ch > '9') return std::nullopt;
+         const std::uint64_t digit = static_cast<std::uint64_t>(ch - '0');
+         if (n > (UINT64_MAX - digit) / 10) return std::nullopt; // Rust parse: overflow is an error
+         n = n * 10 + digit;
+      }
+      if (n < 1) return std::nullopt;
+      universe = n;
+   }
+   return std::make_pair(universe, to_coordinate(coord_part));
+}
+
+inline std::string Chain::fetch(std::string_view address) const {
+   const auto parsed = parse_universe_address(address);
+   if (!parsed.has_value()) return std::string();
+   const std::uint64_t universe = parsed->first;
+   if (universe < 1 || universe > members.size()) return std::string();
+   return phext::fetch(members[static_cast<std::size_t>(universe - 1)], parsed->second);
 }
 
 } // namespace phext
